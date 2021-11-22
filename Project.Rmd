@@ -1,0 +1,267 @@
+---
+title: "Assignment 3"
+subtitle: "844"
+output: pdf_document
+geometry: margin=.75in
+graphics: yes
+header-includes:
+- \usepackage{graphicx}
+- \usepackage{color}
+fontsize: 9pt
+classoption: letter
+
+---
+```{r, setup, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE,
+                      message = FALSE,
+                      fig.align = "center", 
+                      # Two following determine width and height
+                      # of the R device on which the plots are made
+                      fig.width = 10, 
+                      fig.height = 6,
+                      # last argument here determines the actual 
+                      # height of the plot as it appears in the processed
+                      # RMarkdown file
+                      out.height = "50%") 
+
+dataDirectory <- "./"
+imgDirectory <- "./img"
+```
+```{r setup libraries, echo = FALSE}
+library(tidyverse)
+library(Rfast)
+library(latex2exp)
+library(boot)
+library(MASS)
+library(splines)
+library(rstanarm)
+library(rsample)
+library(brms)
+library(bayestestR)
+library(bayesplot)
+library(glmnet)
+library(regclass)
+library(leaps) # a lbrary for best subset selection
+library(mmnst)
+```
+
+Reading the modified dataset:
+```{r}
+setwd("/Users/aatrayee/Desktop/")
+my_data <- read.csv(file.path(dataDirectory, "analyseData.csv"), header=TRUE)
+head(my_data,5)
+```
+
+Summary of the dataset:
+```{r}
+my_data["Station.code"] <- NULL #removing station code from the datset as it will not be needed in the model
+summary(my_data) # summary of the dataset without Station code
+```
+
+
+The dataset will be split into 70% training data and 30% testing data randomly. 
+The dataset is split up randomly so that we can have an unbiased evaluation of 
+the performance of the prediction.
+
+```{r}
+# choosing 75% of the data to be the training data
+data_split <- initial_split(my_data, prop = .70)
+# extracting training data and test data as two seperate dataframes
+data_train <- training(data_split)
+data_test  <- testing(data_split)
+```
+
+We are interested in modelling O3(Ozone) as a function of the explanatory 
+variables (SO2, NO2, CO, PM10, PM2.5), so we have a variable Y_train as the response
+variable O3 for the training data and variable X_train as a dataframe of all the explanatory variables for the training data.
+Similarly, we have a variable Y_test as the response variable O3 for the testing data and variable X_test as a dataframe of all the explanatory variables for the testing data.
+```{r}
+Y_train <- data_train["O3",]
+X_train <- data_train[c("SO2", "NO2", "CO", "PM10", "PM2.5")]
+
+Y_test <- data_test["O3",]
+X_test <- data_test[c("SO2", "NO2", "CO", "PM10", "PM2.5")]
+```
+
+Multiple linear regression model
+```{r}
+lm_model<-lm(O3~., data=data_train) #fitting the training data to multiple linear regression model
+VIF(lm_model) # calculating the VIF
+
+summary(lm_model) # Summary from the fitted multiple linear regression model
+```
+Looks like all the values are significant so we predict the fitted model on the
+test data
+
+```{r}
+lm_pred <- predict(lm_model, new=data_test) #predicting the data
+MSE_lm <- mean((lm_pred- data_test$O3)^2) #calculating MSE for multiple linear model
+MSE_lm #printing the MSE for multiple linear model
+
+```
+
+
+Bayesian Linear Regression
+```{r}
+model_bayes<- stan_glm(O3~., data=data_train, seed=111)#fitting the Bayesian Linear Regression model
+summary(model_bayes)#printing the summary of the model
+
+```
+
+
+
+```{r}
+print(model_bayes, digits = 3)#printing the Median and median absolute deviation of the model
+```
+Kernel density plots of posterior draws with all chains merged.
+
+
+```{r}
+mcmc_dens(model_bayes, pars = c("SO2"))+
+  vline_at(5.945, col="red")
+```
+
+```{r}
+mcmc_dens(model_bayes, pars = c("NO2"))+
+  vline_at(-0.033, col="red")
+```
+```{r}
+mcmc_dens(model_bayes, pars = c("CO"))+
+  vline_at(-0.037 , col="red")
+```
+```{r}
+mcmc_dens(model_bayes, pars = c("PM10"))+
+  vline_at(0, col="red")
+```
+```{r}
+mcmc_dens(model_bayes, pars = c("PM2.5"))+
+  vline_at(0, col="red")
+```
+
+the full statistics of the bayesian linear regression model
+```{r}
+describe_posterior(model_bayes)
+```
+
+finding Highest Density Interval 
+```{r}
+hdi(model_bayes)
+```
+
+
+finding Equal-Tailed Interval
+```{r}
+eti(model_bayes)
+```
+from the above, it is evident that PM10 and PM2.5 is not significant so we drop it from our dataset
+
+Histograms of posterior draws with all chains merged for SO2 and NO2
+
+```{r}
+color_scheme_set("green")
+mcmc_hist(model_bayes, pars =c("SO2", "NO2"))
+
+```
+
+Training model without PM10 and PM2.5
+```{r}
+model_bayes<- stan_glm(O3~SO2+NO2+CO, data=data_train, seed=111)
+```
+
+Finding the MSE of Bayesian Linear Regression
+```{r}
+bayes_pred <- predict(model_bayes, new=data_test)
+MSE_bayes <- mean((bayes_pred- data_test$O3)^2)
+MSE_bayes
+```
+
+LASSO regression
+```{r}
+X=cbind(data_train$S02 , data_train$NO2, data_train$CO , 
+        data_train$PM10 , data_train$PM2.5) #defining X matrix for training
+
+model_lasso <- cv.glmnet(X, data_train$O3, alpha=1) #cross validation of lasso to find optimal lamnda
+model_lasso 
+model_lasso$lambda.min #the optimal lambda
+lasso_model=glmnet(X , data_train$O3, alpha=1, lambda=seq(0,1,length=10),
+                  family = "gaussian") #fitting a lasso model with optimal lambda value
+```
+
+```{r}
+#plotting the Shrinkage of parameters (LASSO)
+plot(1:17, main="Shrinkage of parameters (LASSO)" , xlab="lambda" ,  ylab="beta" ,  
+     xlim=c(0,1.1) , ylim=c(-0.2,0.6), pch=" ") 
+
+
+for(i in 2:5){
+  lines(lasso_model$lambda,coef(lasso_model)[i,], lty=(i-1), col=(i-1))
+}
+
+legend(0.8,0.5, legend=list("beta1" , "beta2" , "beta3" , "beta4" , 
+                          "beta5"), 
+       lty=1:15, col=1:15, box.col = "white")
+
+lasso.coef=predict (lasso_model, type="coefficients", s= model_lasso$lambda.min
+)[1:5,] #checking which coeffients are zero
+lasso.coef
+```
+
+
+
+Ridge regression
+```{r}
+X=cbind(data_train$S02 , data_train$NO2, data_train$CO , 
+        data_train$PM10 , data_train$PM2.5)#defining X matrix for training
+
+model_ridge <- cv.glmnet(X, data_train$O3, alpha=0) #cross validation of ridge to find optimal lamnda
+model_ridge
+model_ridge$lambda.min #the optimal lambda
+ridge_model=glmnet(X , data_train$O3, alpha=0, lambda=seq(0,3,length=10),
+                  family = "gaussian") #fitting a ridge model with optimal lambda value
+```
+
+
+```{r}
+#plotting the Shrinkage of parameters (ridge)
+plot(1:17, main="Shrinkage of parameters (Ridge)" , xlab="lambda" ,  ylab="beta" ,  
+     xlim=c(0,1.1) , ylim=c(-0.2,0.6), pch=" ")
+
+
+for(i in 2:5){
+  lines(ridge_model$lambda,coef(ridge_model)[i,], lty=(i-1), col=(i-1))
+}
+
+legend(0.8,0.5, legend=list("beta1" , "beta2" , "beta3" , "beta4" , 
+                          "beta5"), 
+       lty=1:15, col=1:15, box.col = "white")
+
+ridge.coef=predict (ridge_model, type="coefficients", s= model_ridge$lambda.min
+)[1:5,] #checking which coeffients are zero
+ridge.coef
+```
+
+Calculating the MSE of LASSO and Ridge
+```{r}
+
+#LASSO
+
+X_test=cbind(data_test$S02 , data_test$NO2, data_test$CO , 
+        data_test$PM10 , data_test$PM2.5)
+fit.Lasso=glmnet(X_test , data_test$O3, alpha=1, lambda=seq(0,1,length=10),
+                  family = "gaussian")
+pred_lasso <- predict(fit.Lasso, s = lasso_model$lambda.min, newx=X_test)
+error_ss_lasso = mean((data_test$O3-pred_lasso)^2)
+error_ss_lasso
+
+
+fit.ridge=glmnet(X_test , data_test$O3, alpha=1, lambda=seq(0,1,length=10),
+                  family = "gaussian")
+pred_ridge <- predict(fit.ridge, s = ridge_model$lambda.min, newx=X_test)
+error_ss_ridge = mean((data_test$O3-pred_ridge)^2)
+error_ss_ridge
+
+```
+
+
